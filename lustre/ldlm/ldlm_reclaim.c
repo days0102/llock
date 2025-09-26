@@ -46,6 +46,10 @@ __u64 ldlm_lock_limit;
 __u64 ldlm_reclaim_threshold_mb;
 __u64 ldlm_lock_limit_mb;
 
+ldlm_reclaim_lock_cbt ldlm_reclaim_locks_cb;
+
+enum ldlm_reclaim_mode ldlm_reclaim_mode = LDLM_RECLAIM_DEFAULT;
+
 struct percpu_counter		ldlm_granted_total;
 static atomic_t			ldlm_nr_reclaimer;
 static s64			ldlm_last_reclaim_age_ns;
@@ -371,6 +375,14 @@ static inline __u64 ldlm_locknr2mb(__u64 locknr)
 	return (locknr * sizeof(struct ldlm_lock) + 512 * 1024) >> 20;
 }
 
+void ldlm_set_reclaim_mode(__u64 mode)
+{
+	if(unlikely(mode == LDLM_RECLAIM_NONE))
+		ldlm_reclaim_locks_cb = ldlm_reclaim_lock_cb;
+	else if(mode == LDLM_RECLAIM_DEFAULT)
+		ldlm_reclaim_locks_cb = ldlm_reclaim_lock_cb;
+}
+
 #define LDLM_WM_RATIO_LOW_DEFAULT	20
 #define LDLM_WM_RATIO_HIGH_DEFAULT	30
 
@@ -382,6 +394,7 @@ int ldlm_reclaim_setup(void)
 	ldlm_reclaim_threshold_mb = ldlm_locknr2mb(ldlm_reclaim_threshold);
 	ldlm_lock_limit = ldlm_ratio2locknr(LDLM_WM_RATIO_HIGH_DEFAULT);
 	ldlm_lock_limit_mb = ldlm_locknr2mb(ldlm_lock_limit);
+	ldlm_reclaim_locks_cb = ldlm_reclaim_lock_cb;
 
 	ldlm_last_reclaim_age_ns = LDLM_RECLAIM_AGE_MAX;
 	ldlm_last_reclaim_time = ktime_get();
