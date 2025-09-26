@@ -46,6 +46,12 @@ __u64 ldlm_lock_limit;
 __u64 ldlm_reclaim_threshold_mb;
 __u64 ldlm_lock_limit_mb;
 
+enum ldlm_reclaim_lock_mode ldlm_reclaim_lock_mode;
+
+static ldlm_reclaim_lock_cb_t ldlm_reclaim_lock_cbs[] = {
+	[LDLM_RECLAIM_MODE_DEFAULT] = ldlm_reclaim_lock_cb,
+};
+
 struct percpu_counter		ldlm_granted_total;
 static atomic_t			ldlm_nr_reclaimer;
 static s64			ldlm_last_reclaim_age_ns;
@@ -88,7 +94,7 @@ static inline bool ldlm_lock_reclaimable(struct ldlm_lock *lock)
  * \retval 0		continue the scan
  * \retval 1		stop the iteration
  */
-static int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
+int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 				struct hlist_node *hnode, void *arg)
 
 {
@@ -165,6 +171,7 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 			     s64 age_ns, bool skip)
 {
 	struct ldlm_reclaim_cb_data	data;
+	ldlm_reclaim_lock_cb_t reclaim_cb;
 	int				idx, type, start;
 	int				rc;
 	ENTRY;
@@ -192,7 +199,9 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 	data.rcd_prev_bd = NULL;
 	start = ns->ns_reclaim_start % CFS_HASH_NBKT(ns->ns_rs_hash);
 
-	cfs_hash_for_each_nolock(ns->ns_rs_hash, ldlm_reclaim_lock_cb, &data,
+	reclaim_cb = ldlm_reclaim_lock_cbs[ldlm_reclaim_lock_mode];
+
+	cfs_hash_for_each_nolock(ns->ns_rs_hash, reclaim_cb, &data,
 				 start);
 
 	CDEBUG(D_DLMTRACE, "NS(%s): %d locks to be reclaimed, found %d/%d "
@@ -382,6 +391,7 @@ int ldlm_reclaim_setup(void)
 	ldlm_reclaim_threshold_mb = ldlm_locknr2mb(ldlm_reclaim_threshold);
 	ldlm_lock_limit = ldlm_ratio2locknr(LDLM_WM_RATIO_HIGH_DEFAULT);
 	ldlm_lock_limit_mb = ldlm_locknr2mb(ldlm_lock_limit);
+	ldlm_reclaim_lock_mode = LDLM_RECLAIM_MODE_DEFAULT;
 
 	ldlm_last_reclaim_age_ns = LDLM_RECLAIM_AGE_MAX;
 	ldlm_last_reclaim_time = ktime_get();

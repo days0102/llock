@@ -3322,6 +3322,35 @@ static ssize_t lock_limit_mb_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(lock_limit_mb);
 
+static ssize_t lock_reclaim_mode_show(struct kobject *kobj,
+				  struct attribute *attr,
+				  char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", ldlm_reclaim_lock_mode);
+}
+
+static ssize_t lock_reclaim_mode_store(struct kobject *kobj,
+				   struct attribute *attr,
+				   const char *buffer,
+				   size_t count)
+{
+	unsigned int val;
+	int rc;
+
+	rc = kstrtouint(buffer, 10, &val);
+	if (rc)
+		return rc;
+	
+	if(val >= LDLM_RECLAIM_MODE_MAX){
+		return -EINVAL;
+	}
+
+	ldlm_reclaim_lock_mode = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_reclaim_mode);
+
 static ssize_t lock_granted_count_show(struct kobject *kobj,
 				       struct attribute *attr,
 				       char *buf)
@@ -3340,6 +3369,7 @@ static struct attribute *ldlm_attrs[] = {
 	&lustre_attr_lock_reclaim_threshold_mb.attr,
 	&lustre_attr_lock_limit_mb.attr,
 	&lustre_attr_lock_granted_count.attr,
+	&lustre_attr_lock_reclaim_mode.attr,
 #endif
 	NULL,
 };

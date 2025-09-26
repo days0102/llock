@@ -393,6 +393,20 @@ void ldlm_reclaim_add(struct ldlm_lock *lock);
 void ldlm_reclaim_del(struct ldlm_lock *lock);
 bool ldlm_reclaim_full(void);
 
+typedef int (*ldlm_reclaim_lock_cb_t)(struct cfs_hash *hs,
+                                     struct cfs_hash_bd *bd,
+                                     struct hlist_node *hnode,
+                                     void *arg);
+int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
+				struct hlist_node *hnode, void *arg);
+
+enum ldlm_reclaim_lock_mode {
+	LDLM_RECLAIM_MODE_DEFAULT = 0,
+	LDLM_RECLAIM_MODE_MAX,
+	LDLM_RECLAIM_MODE_MIN = LDLM_RECLAIM_MODE_DEFAULT,
+};
+extern enum ldlm_reclaim_lock_mode ldlm_reclaim_lock_mode;
+
 static inline bool ldlm_res_eq(const struct ldlm_res_id *res0,
 			       const struct ldlm_res_id *res1)
 {
