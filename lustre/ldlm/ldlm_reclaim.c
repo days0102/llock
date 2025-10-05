@@ -50,6 +50,7 @@ enum ldlm_reclaim_lock_mode ldlm_reclaim_lock_mode;
 
 static ldlm_reclaim_lock_cb_t ldlm_reclaim_lock_cbs[] = {
 	[LDLM_RECLAIM_MODE_DEFAULT] = ldlm_reclaim_lock_cb,
+	[LDLM_RECLAIM_MODE_NOTIFY]	= ldlm_reclaim_notify_cb,
 };
 
 struct percpu_counter		ldlm_granted_total;
@@ -65,7 +66,9 @@ struct ldlm_reclaim_cb_data {
 	int			 rcd_start;
 	bool			 rcd_skip;
 	s64			 rcd_age_ns;
-	struct cfs_hash_bd	*rcd_prev_bd;
+	struct cfs_hash *	 rcd_notify_cs;
+	struct rhashtable	 rcd_notify_ht;
+	struct cfs_hash_bd * rcd_prev_bd;
 };
 
 static inline bool ldlm_lock_reclaimable(struct ldlm_lock *lock)
@@ -155,6 +158,161 @@ int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 	return rc;
 }
 
+/*
+ * uuid<->export lustre hash operations
+ */
+/*
+ * NOTE: It is impossible to find an export that is in failed
+ *      state with this function
+ */
+static int uuid_keycmp(struct rhashtable_compare_arg *arg, const void *obj)
+{
+	const struct obd_uuid *	 uuid = arg->key;
+	const struct obd_export *exp  = obj;
+
+	if (obd_uuid_equals(uuid, &exp->exp_client_uuid) && !exp->exp_failed)
+		return 0;
+	return -ESRCH;
+}
+
+static const struct rhashtable_params uuid_hash_params = {
+	.key_len			 = sizeof(struct obd_uuid),
+	.key_offset			 = offsetof(struct obd_export, exp_client_uuid),
+	.head_offset		 = offsetof(struct obd_export, exp_lock_uuid_hash),
+	.obj_cmpfn			 = uuid_keycmp,
+	.automatic_shrinking = false,
+};
+
+/**
+ * Callback function for revoking locks from certain resource.
+ * A mechanism to report memory pressure from the server to the clients.
+ *
+ * \param [in] arg->clients ns_rs_hash, list of clients to report
+ *
+ */
+int ldlm_reclaim_notify_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
+						   struct hlist_node *hnode, void *arg)
+
+{
+	struct ldlm_resource *		 res;
+	struct ldlm_reclaim_cb_data *data;
+	struct ldlm_lock *			 lock;
+	struct ldlm_ns_bucket *		 nsb;
+	int							 rc = 0;
+
+	data = (struct ldlm_reclaim_cb_data *)arg;
+
+	LASSERTF(data->rcd_added < data->rcd_total,
+			 "added:%d >= total:%d\n",
+			 data->rcd_added,
+			 data->rcd_total);
+
+	nsb = cfs_hash_bd_extra_get(hs, bd);
+	res = cfs_hash_object(hs, hnode);
+
+	if (data->rcd_prev_bd != bd) {
+		if (data->rcd_prev_bd != NULL)
+			ldlm_res_to_ns(res)->ns_reclaim_start++;
+		data->rcd_prev_bd = bd;
+		data->rcd_cursor  = 0;
+		data->rcd_start	  = nsb->nsb_reclaim_start % cfs_hash_bd_count_get(bd);
+	}
+
+	if (data->rcd_skip && data->rcd_cursor < data->rcd_start) {
+		data->rcd_cursor++;
+		return 0;
+	}
+
+	nsb->nsb_reclaim_start++;
+
+	lock_res(res);
+	list_for_each_entry(lock, &res->lr_granted, l_res_link)
+	{
+		if (!ldlm_lock_reclaimable(lock))
+			continue;
+
+		if (!ldlm_is_ast_sent(lock)) {
+			ldlm_set_ast_sent(lock);
+			LASSERT(list_empty(&lock->l_rk_ast));
+
+			rc = rhashtable_lookup_insert_fast(
+				&data->rcd_notify_ht,
+				&lock->l_export->exp_lock_uuid_hash,
+				uuid_hash_params);
+			if (rc) {
+				list_add(&lock->l_rk_ast, &data->rcd_rpc_list);
+				ldlm_lock_get(lock);
+				if (++data->rcd_added == data->rcd_total) {
+					rc = 1; /* stop the iteration */
+					break;
+				}
+			}
+		}
+	}
+	unlock_res(res);
+
+	return rc;
+}
+
+static unsigned ldlm_export_uuid_hash(struct cfs_hash *hs, const void *key,
+									  const unsigned int bits)
+{
+	return cfs_hash_64(((struct lustre_handle *)key)->cookie, bits);
+}
+
+static void *ldlm_export_uuid_key(struct hlist_node *hnode)
+{
+	struct ldlm_lock *lock;
+
+	lock = hlist_entry(hnode, struct ldlm_lock, l_exp_hash);
+	return &lock->l_remote_handle;
+}
+
+static void ldlm_export_uuid_keycpy(struct hlist_node *hnode, void *key)
+{
+	struct ldlm_lock *lock;
+
+	lock				  = hlist_entry(hnode, struct ldlm_lock, l_exp_hash);
+	lock->l_remote_handle = *(struct lustre_handle *)key;
+}
+
+static int ldlm_export_uuid_keycmp(const void *key, struct hlist_node *hnode)
+{
+	return lustre_handle_equal(ldlm_export_uuid_key(hnode), key);
+}
+
+static void *ldlm_export_uuid_object(struct hlist_node *hnode)
+{
+	return hlist_entry(hnode, struct ldlm_lock, l_exp_hash);
+}
+
+static void ldlm_export_uuid_get(struct cfs_hash *hs, struct hlist_node *hnode)
+{
+	struct ldlm_lock *lock;
+
+	lock = hlist_entry(hnode, struct ldlm_lock, l_exp_hash);
+	ldlm_lock_get(lock);
+}
+
+static void ldlm_export_uuid_put(struct cfs_hash *hs, struct hlist_node *hnode)
+{
+	struct ldlm_lock *lock;
+
+	lock = hlist_entry(hnode, struct ldlm_lock, l_exp_hash);
+	ldlm_lock_put(lock);
+}
+
+static struct cfs_hash_ops ldlm_export_uuid_ops = {
+	.hs_hash	   = ldlm_export_uuid_hash,
+	.hs_key		   = ldlm_export_uuid_key,
+	.hs_keycmp	   = ldlm_export_uuid_keycmp,
+	.hs_keycpy	   = ldlm_export_uuid_keycpy,
+	.hs_object	   = ldlm_export_uuid_object,
+	.hs_get		   = ldlm_export_uuid_get,
+	.hs_put		   = ldlm_export_uuid_put,
+	.hs_put_locked = ldlm_export_uuid_put,
+};
+
 /**
  * Revoke locks from the resources of a namespace in a roundrobin
  * manner.
@@ -197,7 +355,25 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 	data.rcd_age_ns = age_ns;
 	data.rcd_skip = skip;
 	data.rcd_prev_bd = NULL;
+
+	data.rcd_notify_cs = cfs_hash_create("RECLAIM_LOCK_CLIENTS",
+										 HASH_GEN_CUR_BITS,
+										 HASH_GEN_MAX_BITS,
+										 HASH_GEN_BKT_BITS,
+										 0,
+										 CFS_HASH_MIN_THETA,
+										 CFS_HASH_MAX_THETA,
+										 &ldlm_export_uuid_ops,
+										 CFS_HASH_DEFAULT);
+	if (!data.rcd_notify_cs) {
+		GOTO(out, rc = -ENOMEM);
+	}
 	start = ns->ns_reclaim_start % CFS_HASH_NBKT(ns->ns_rs_hash);
+
+	rc = rhashtable_init(&data.rcd_notify_ht, &uuid_hash_params);
+	if (rc) {
+		GOTO(out_hash, rc);
+	}
 
 	reclaim_cb = ldlm_reclaim_lock_cbs[ldlm_reclaim_lock_mode];
 
@@ -216,11 +392,18 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 		ldlm_reprocess_recovery_done(ns);
 
 	*count -= data.rcd_added;
+
+	rhashtable_destroy(&data.rcd_notify_ht);
+
+out_hash:
+	cfs_hash_putref(data.rcd_notify_cs);
+
+out:
 	EXIT;
 }
 
 #define LDLM_RECLAIM_BATCH	512
-#define LDLM_RECLAIM_AGE_MIN	(300 * NSEC_PER_SEC)
+#define LDLM_RECLAIM_AGE_MIN (1 * NSEC_PER_SEC)
 #define LDLM_RECLAIM_AGE_MAX	(LDLM_DEFAULT_LRU_MAX_AGE * NSEC_PER_SEC * 3/4)
 
 static inline s64 ldlm_reclaim_age(void)

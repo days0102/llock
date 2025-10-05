@@ -399,9 +399,12 @@ typedef int (*ldlm_reclaim_lock_cb_t)(struct cfs_hash *hs,
                                      void *arg);
 int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 				struct hlist_node *hnode, void *arg);
+int ldlm_reclaim_notify_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
+				struct hlist_node *hnode, void *arg);	
 
 enum ldlm_reclaim_lock_mode {
 	LDLM_RECLAIM_MODE_DEFAULT = 0,
+	LDLM_RECLAIM_MODE_NOTIFY,
 	LDLM_RECLAIM_MODE_MAX,
 	LDLM_RECLAIM_MODE_MIN = LDLM_RECLAIM_MODE_DEFAULT,
 };
