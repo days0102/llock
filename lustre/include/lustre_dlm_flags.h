@@ -146,6 +146,15 @@
 #define ldlm_set_converting(_l)         LDLM_SET_FLAG((_l), 1ULL << 25)
 #define ldlm_clear_converting(_l)       LDLM_CLEAR_FLAG((_l), 1ULL << 25)
 
+/*
+ * flag indicates that there is memory pressure on the server and
+ * it is hoped that the client will revoke the inactive lock.
+ */
+#define LDLM_FL_LOCK_RECLAIM		0x0000000004000000ULL /* bit  26 */
+#define ldlm_is_lock_reclaim(_l)	LDLM_TEST_FLAG((_l), 1ULL << 26)
+#define ldlm_set_lock_reclaim(_l)	LDLM_SET_FLAG((_l), 1ULL << 26)
+#define ldlm_clear_lock_reclaim(_l) LDLM_CLEAR_FLAG((_l), 1ULL << 26)
+
 /**
  * Do not expand this lock.  Grant it only on the extent requested.
  * Used for manually requested locks from the client (LU_LADVISE_LOCKAHEAD).
@@ -380,8 +389,8 @@
 #define ldlm_clear_lvb_cached(_l)       LDLM_CLEAR_FLAG((_l), 1ULL << 59)
 
 /** l_flags bits marked as "ast" bits */
-#define LDLM_FL_AST_MASK                (LDLM_FL_FLOCK_DEADLOCK		|\
-					 LDLM_FL_DISCARD_DATA)
+#define LDLM_FL_AST_MASK                                                       \
+	(LDLM_FL_FLOCK_DEADLOCK | LDLM_FL_DISCARD_DATA | LDLM_FL_LOCK_RECLAIM)
 
 /** l_flags bits marked as "blocked" bits */
 #define LDLM_FL_BLOCKED_MASK            (LDLM_FL_BLOCK_GRANTED		|\

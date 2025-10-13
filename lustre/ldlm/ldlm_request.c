@@ -1631,6 +1631,18 @@ int ldlm_cli_cancel(const struct lustre_handle *lockh,
 	}
 
 	lock_res_and_lock(lock);
+
+	if (ldlm_is_lock_reclaim(lock)) {
+		/**
+		 * todo: selects lock unlocks
+		 */
+		LDLM_DEBUG_NOLOCK("lock is set reclaim");
+
+		unlock_res_and_lock(lock);
+
+		RETURN(0);
+	}
+
 	LASSERT(!ldlm_is_converting(lock));
 
 	if (ldlm_is_bl_ast(lock)) {

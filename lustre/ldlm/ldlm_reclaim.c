@@ -50,6 +50,7 @@ enum ldlm_reclaim_lock_mode ldlm_reclaim_lock_mode;
 
 static ldlm_reclaim_lock_cb_t ldlm_reclaim_lock_cbs[] = {
 	[LDLM_RECLAIM_MODE_DEFAULT] = ldlm_reclaim_lock_cb,
+	[LDLM_RECLAIM_MODE_NOTIFY]	= ldlm_reclaim_notify_cb,
 };
 
 struct percpu_counter		ldlm_granted_total;
@@ -65,6 +66,7 @@ struct ldlm_reclaim_cb_data {
 	int			 rcd_start;
 	bool			 rcd_skip;
 	s64			 rcd_age_ns;
+	struct rhashtable	 rcd_notify_ht; /* find client, deduplication */
 	struct cfs_hash_bd	*rcd_prev_bd;
 };
 
@@ -155,6 +157,118 @@ int ldlm_reclaim_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 	return rc;
 }
 
+/*
+ * uuid<->export lustre hash operations
+ */
+/*
+ * NOTE: It is impossible to find an export that is in failed
+ *      state with this function
+ */
+static int uuid_keycmp(struct rhashtable_compare_arg *arg, const void *obj)
+{
+	const struct obd_uuid	*uuid = arg->key;
+	const struct obd_export *exp  = obj;
+
+	if (obd_uuid_equals(uuid, &exp->exp_client_uuid) && !exp->exp_failed)
+		return 0;
+	return -ESRCH;
+}
+
+static const struct rhashtable_params uuid_hash_params = {
+	.key_len			 = sizeof(struct obd_uuid),
+	.key_offset			 = offsetof(struct obd_export, exp_client_uuid),
+	.head_offset		 = offsetof(struct obd_export, exp_lock_uuid_hash),
+	.obj_cmpfn			 = uuid_keycmp,
+	.automatic_shrinking = false,
+};
+
+/**
+ * Callback function for revoking locks from certain resource.
+ * A mechanism to report memory pressure from the server to the clients.
+ *
+ * \param [in] arg->clients ns_rs_hash, list of clients to report
+ *
+ */
+int ldlm_reclaim_notify_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
+						   struct hlist_node *hnode, void *arg)
+
+{
+	struct ldlm_resource		*res;
+	struct ldlm_reclaim_cb_data *data;
+	struct ldlm_lock			*lock;
+	struct ldlm_ns_bucket		*nsb;
+	void						*ret;
+	int							 rc = 0;
+
+	data = (struct ldlm_reclaim_cb_data *)arg;
+
+	LASSERTF(data->rcd_added < data->rcd_total,
+			 "added:%d >= total:%d\n",
+			 data->rcd_added,
+			 data->rcd_total);
+
+	nsb = cfs_hash_bd_extra_get(hs, bd);
+	res = cfs_hash_object(hs, hnode);
+
+	if (data->rcd_prev_bd != bd) {
+		if (data->rcd_prev_bd != NULL)
+			ldlm_res_to_ns(res)->ns_reclaim_start++;
+		data->rcd_prev_bd = bd;
+		data->rcd_cursor  = 0;
+		data->rcd_start	  = nsb->nsb_reclaim_start % cfs_hash_bd_count_get(bd);
+	}
+
+	if (data->rcd_skip && data->rcd_cursor < data->rcd_start) {
+		data->rcd_cursor++;
+		return 0;
+	}
+
+	nsb->nsb_reclaim_start++;
+
+	lock_res(res);
+	list_for_each_entry(lock, &res->lr_granted, l_res_link)
+	{
+		if (!ldlm_lock_reclaimable(lock))
+			continue;
+
+		if (!ldlm_is_ast_sent(lock)) {
+			ldlm_set_ast_sent(lock);
+			LASSERT(list_empty(&lock->l_rk_ast));
+
+			ret = rhashtable_lookup_get_insert_fast(
+				&data->rcd_notify_ht,
+				&lock->l_export->exp_lock_uuid_hash,
+				uuid_hash_params);
+			if (IS_ERR(ret)) {
+				GOTO(out, rc = PTR_ERR(ret));
+			}
+
+			if (ret) {
+				struct obd_export *exp = ret;
+				/* count how many locks belong to this export */
+				exp->exp_lock_count++;
+			} else {
+				list_add(&lock->l_rk_ast, &data->rcd_rpc_list);
+				ldlm_lock_get(lock);
+
+				ldlm_set_lock_reclaim(lock);
+
+				lock->l_export->exp_lock_count = 1;
+
+				if (++data->rcd_added == data->rcd_total) {
+					rc = 1; /* stop the iteration */
+					break;
+				}
+			}
+		}
+	}
+
+out:
+	unlock_res(res);
+
+	return rc;
+}
+
 /**
  * Revoke locks from the resources of a namespace in a roundrobin
  * manner.
@@ -199,6 +313,11 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 	data.rcd_prev_bd = NULL;
 	start = ns->ns_reclaim_start % CFS_HASH_NBKT(ns->ns_rs_hash);
 
+	rc = rhashtable_init(&data.rcd_notify_ht, &uuid_hash_params);
+	if (rc) {
+		GOTO(out, rc);
+	}
+
 	reclaim_cb = ldlm_reclaim_lock_cbs[ldlm_reclaim_lock_mode];
 
 	cfs_hash_for_each_nolock(ns->ns_rs_hash, reclaim_cb, &data,
@@ -216,6 +335,10 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 		ldlm_reprocess_recovery_done(ns);
 
 	*count -= data.rcd_added;
+
+	rhashtable_destroy(&data.rcd_notify_ht);
+
+out:
 	EXIT;
 }
 

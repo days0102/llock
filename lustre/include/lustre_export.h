@@ -191,6 +191,12 @@ struct obd_export {
 	struct rhlist_head	exp_nid_hash;	/** nid-export hash */
 	struct hlist_node	exp_gen_hash;   /** last_rcvd clt gen hash */
 	/**
+	 * find all the clients when the server performs lock revocation.
+	 * deduplication
+	 */
+	struct rhash_head exp_lock_uuid_hash;
+	__u64			  exp_lock_count; /** how many locks on this exp */
+	/**
 	 * All exports eligible for ping evictor are linked into a list
 	 * through this field in "most time since last request on this export"
 	 * order
