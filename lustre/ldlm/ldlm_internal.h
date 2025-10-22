@@ -385,6 +385,23 @@ extern u64 ldlm_lock_limit;
 extern u64 ldlm_reclaim_threshold_mb;
 extern u64 ldlm_lock_limit_mb;
 extern struct percpu_counter ldlm_granted_total;
+
+enum ldlm_reclaim_policy {
+	/*
+	 * The lock server leads the lock reclaim work via locks' LRU or age
+	 * on server side.
+	 */
+	LDLM_RECLAIM_POL_SRV_LRU,
+	/*
+	 * The lock server notifies clients with the information such memory
+	 * pressure and recommended lock count to cancel. The client do the
+	 * lock shrinking work according to the information (such as LRU,
+	 * frequency and age) of locks on its lock namespace.
+	 */
+	LDLM_RECLAIM_POL_NOTIFY,
+};
+
+extern enum ldlm_reclaim_policy ldlm_reclaim_pol;
 #endif
 extern unsigned int ldlm_dump_granted_max;
 int ldlm_reclaim_setup(void);

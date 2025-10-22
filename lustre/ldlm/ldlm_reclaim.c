@@ -46,6 +46,8 @@ __u64 ldlm_lock_limit;
 __u64 ldlm_reclaim_threshold_mb;
 __u64 ldlm_lock_limit_mb;
 
+enum ldlm_reclaim_policy ldlm_reclaim_pol;
+
 struct percpu_counter		ldlm_granted_total;
 static atomic_t			ldlm_nr_reclaimer;
 static s64			ldlm_last_reclaim_age_ns;
@@ -229,19 +231,202 @@ static inline s64 ldlm_reclaim_age(void)
 	return age_ns;
 }
 
+#define LDLM_MIN_RECLAIM_COUNT	16
+
+/**
+ * Calcualte proportional lock count for an export using @exp_lock_count.
+ * Consider the following factors to determine the count of locks this
+ * client should cancel:
+ * - total locks wanted to cancel accross all clients;
+ * - total number of client having granted locks (TODO);
+ * - number of locks holding by this client;
+ */
+static int ldlm_client_reclaim_count(struct obd_export *exp, int total_count,
+				     int total_to_cancel, int remain)
+{
+	int exp_count = atomic_read(&exp->exp_locks_count);
+	int count;
+
+	if (total_count == 0 || exp_count == 0)
+		return 0;
+
+	/* Proportional allocation based on locks held */
+	count = (exp_count * total_to_cancel) / total_count;
+	/* Ensure minimum cancellation for active exports. */
+	if (count == 0 && exp_count > 0)
+		/* FIXME: should we leave some lock for the active client?*/
+		count = min(exp_count, LDLM_MIN_RECLAIM_COUNT);
+
+	/*
+	 * Cap at the total lock count of the export and remain count for this
+	 * reclaim process.
+	 */
+	if (count > exp_count)
+		count = exp_count;
+	if (count > remain)
+		count = remain;
+
+	CDEBUG(D_DLMTRACE, "Export %pK: exp_count %d, total_count %d, "
+	       "total_to_cancel %d, remain %d, count %d\n",
+	       exp, exp_count, total_count, total_to_cancel, remain, count);
+	return count;
+}
+
+/**
+ * Send a fake blocking AST to cleint requesting lock cancellation.
+ *
+ * @param[in] exp	export to send notify request to
+ * @param[in] count	number of locks to cancel
+ *
+ * \retval 0		success
+ * \retval -ve		error code
+ */
+static int ldlm_reclaim_client_notify_ast(struct obd_export *exp, int count)
+{
+	struct ptlrpc_request *req;
+	struct ldlm_request *body;
+
+	ENTRY;
+
+	/* Use LDLM_SET_INFO instead? */
+	req = ptlrpc_request_alloc_pack(exp->exp_imp_reverse,
+					&RQF_LDLM_BL_CALLBACK,
+					LUSTRE_DLM_VERSION, LDLM_BL_CALLBACK);
+	if (IS_ERR(req))
+		RETURN(PTR_ERR(req));
+
+	body = req_capsule_client_get(&req->rq_pill, &RMF_DLM_REQ);
+	/* Fake lock handle to indicate that this is a lock reclaim request. */
+	body->lock_handle[0].cookie = 0;
+	body->lock_handle[1].cookie = 0;
+	body->lock_count = count;
+
+	ptlrpc_request_set_replen(req);
+
+	req->rq_no_resend = 1;
+	req->rq_no_delay = 1;
+	/* Shorter timeout for reclaim request to the client */
+	req->rq_timeout = ldlm_timeout / 2;
+
+	/*
+	 * Send asynchronously.
+	 * Should we make it synchronously to avoid sending too much
+	 * reclaim requests to clients or add some sleep interval between
+	 * two reclaim progress?
+	 */
+	ptlrpcd_add_req(req);
+	CDEBUG(D_DLMTRACE, "Sent reclaim request to %s: count=%d\n",
+	       obd_export_nid2str(exp), count);
+
+	RETURN(0);
+}
+
+/**
+ * Lock reclaim by requesting clients to cancel locks.
+ *
+ * @param[in] ns	namespace to do the lock reclaim on
+ * @param[in,out] count	count of lock to be cancelled
+ *
+ * \retval number of locks requested to cancel
+ */
+static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
+					int total_count, int total_to_cancel,
+					int *count)
+{
+	struct obd_device *obd = ns->ns_obd;
+	struct obd_export *exp;
+	int maxscan = obd->obd_num_exports;
+	int nr_processed = 0;
+	int request_sent = 0;
+	int remain = *count;
+	int type;
+	int idx;
+	int rc;
+
+	ENTRY;
+
+	LASSERT(*count != 0);
+	LASSERT(obd != NULL);
+
+	type = server_name2index(obd->obd_name, &idx, NULL);
+	if (type != LDD_F_SV_TYPE_MDT && type != LDD_F_SV_TYPE_OST)
+		RETURN_EXIT;
+
+	if (atomic_read(&ns->ns_bref) == 0)
+		RETURN_EXIT;
+
+	if (maxscan == 0)
+		RETURN_EXIT;
+
+	CDEBUG(D_DLMTRACE, "%s: Try to reclaim %d lock from %d exports (total_count=%d)\n",
+	       ldlm_ns_name(ns), total_to_cancel, maxscan, total_count);
+
+	spin_lock(&obd->obd_dev_lock);
+	while (*count > 0 && nr_processed < maxscan) {
+		int exp_reclaim_count;
+
+		if (list_empty(&obd->obd_exports))
+			break;
+
+		/*
+		 * Get the frist export and move it to tail for round-robin.
+		 * FIXME: use separate list for active exports to do lock
+		 * reclaim scanning?
+		 */
+		exp = list_first_entry(&obd->obd_exports, struct obd_export,
+				       exp_obd_chain);
+		list_move_tail(&exp->exp_obd_chain, &obd->obd_exports);
+		nr_processed++;
+
+		if (atomic_read(&exp->exp_locks_count) == 0)
+			continue;
+
+		exp_reclaim_count = ldlm_client_reclaim_count(exp, total_count,
+							      total_to_cancel,
+							      *count);
+		if (exp_reclaim_count == 0)
+			continue;
+
+		class_export_get(exp);
+		spin_unlock(&obd->obd_dev_lock);
+
+		rc = ldlm_reclaim_client_notify_ast(exp, exp_reclaim_count);
+		if (rc) {
+			CERROR("%s: Failed to send reclaim notify to %s: rc=%d\n",
+			       ldlm_ns_name(ns), obd_export_nid2str(exp), rc);
+			/* Ignore the error here... */
+		} else {
+			*count -= exp_reclaim_count;
+			request_sent++;
+		}
+
+		class_export_put(exp);
+		spin_lock(&obd->obd_dev_lock);
+	}
+	spin_unlock(&obd->obd_dev_lock);
+
+	CDEBUG(D_DLMTRACE,
+	       "%s: Sent %d/%d reclaim requests to reclaim %d/%d/%d locks.\n",
+	       ldlm_ns_name(ns), request_sent, nr_processed,
+	       remain - *count, *count, total_to_cancel);
+
+	RETURN_EXIT;
+}
+
 /**
  * Revoke certain amount of locks from all the server namespaces
  * in a roundrobin manner. Lock age is used to avoid reclaim on
  * the non-aged locks.
  */
-static void ldlm_reclaim_ns(void)
+static void ldlm_reclaim_ns(int total_count)
 {
-	struct ldlm_namespace	*ns;
-	int			 count = LDLM_RECLAIM_BATCH;
-	int			 ns_nr, nr_processed;
-	enum ldlm_side		 ns_cli = LDLM_NAMESPACE_SERVER;
+	struct ldlm_namespace *ns;
+	int count = LDLM_RECLAIM_BATCH;
+	int ns_nr, nr_processed;
+	enum ldlm_side ns_cli = LDLM_NAMESPACE_SERVER;
 	s64 age_ns;
-	bool			 skip = true;
+	bool skip = true;
+
 	ENTRY;
 
 	if (!atomic_add_unless(&ldlm_nr_reclaimer, 1, 1)) {
@@ -265,7 +450,18 @@ again:
 		ldlm_namespace_move_to_active_locked(ns, ns_cli);
 		mutex_unlock(ldlm_namespace_lock(ns_cli));
 
-		ldlm_reclaim_res(ns, &count, age_ns, skip);
+		switch (ldlm_reclaim_pol) {
+		case LDLM_RECLAIM_POL_SRV_LRU:
+			ldlm_reclaim_res(ns, &count, age_ns, skip);
+			break;
+		case LDLM_RECLAIM_POL_NOTIFY:
+			ldlm_reclaim_notify_clients(ns, total_count,
+						    LDLM_RECLAIM_BATCH, &count);
+			break;
+		default:
+			LBUG();
+		}
+
 		ldlm_namespace_put(ns);
 		nr_processed++;
 	}
@@ -333,7 +529,7 @@ bool ldlm_reclaim_full(void)
 			lock_count =
 			    percpu_counter_read_positive(&ldlm_granted_total);
 		if (lock_count > low)
-			ldlm_reclaim_ns();
+			ldlm_reclaim_ns(lock_count);
 	}
 
 	if (high != 0 && CFS_FAIL_CHECK(OBD_FAIL_LDLM_WATERMARK_HIGH)) {
@@ -382,6 +578,8 @@ int ldlm_reclaim_setup(void)
 	ldlm_reclaim_threshold_mb = ldlm_locknr2mb(ldlm_reclaim_threshold);
 	ldlm_lock_limit = ldlm_ratio2locknr(LDLM_WM_RATIO_HIGH_DEFAULT);
 	ldlm_lock_limit_mb = ldlm_locknr2mb(ldlm_lock_limit);
+	/* TODO: Add sysfs tunable for LDLM reclaim policy */
+	ldlm_reclaim_pol = LDLM_RECLAIM_POL_NOTIFY;
 
 	ldlm_last_reclaim_age_ns = LDLM_RECLAIM_AGE_MAX;
 	ldlm_last_reclaim_time = ktime_get();
