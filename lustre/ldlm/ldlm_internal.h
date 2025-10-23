@@ -399,6 +399,8 @@ enum ldlm_reclaim_policy {
 	 * frequency and age) of locks on its lock namespace.
 	 */
 	LDLM_RECLAIM_POL_NOTIFY,
+
+	LDLM_RECLAIM_POL_MAX,
 };
 
 extern enum ldlm_reclaim_policy ldlm_reclaim_pol;
