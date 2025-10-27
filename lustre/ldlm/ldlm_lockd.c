@@ -2450,9 +2450,8 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 		       "%s: recevie notify from server to reclaim %d locks.\n",
 		       ldlm_ns_name(ns), dlm_req->lock_count);
 		rc = ldlm_cancel_lru(ns, dlm_req->lock_count, LCF_ASYNC, 0);
-		if (rc)
-			CERROR("%s: failed to LRU shrinking: rc=%d\n",
-			       ldlm_ns_name(ns), rc);
+		if (!rc)
+			CERROR("%s: failed LRU shrinking: rc = %d\n", ldlm_ns_name(ns), rc);
 		rc = ldlm_callback_reply(req, 0);
 		RETURN(0);
 	}

@@ -281,7 +281,8 @@ static int ldlm_client_reclaim_count(struct obd_export *exp, int total_count,
  * \retval 0		success
  * \retval -ve		error code
  */
-static int ldlm_reclaim_client_notify_ast(struct obd_export *exp, int count)
+static int ldlm_reclaim_client_notify_ast(struct obd_export *exp, int count,
+										  struct ptlrpc_request_set *req_set)
 {
 	struct ptlrpc_request *req;
 	struct ldlm_request *body;
@@ -314,7 +315,8 @@ static int ldlm_reclaim_client_notify_ast(struct obd_export *exp, int count)
 	 * reclaim requests to clients or add some sleep interval between
 	 * two reclaim progress?
 	 */
-	ptlrpcd_add_req(req);
+	ptlrpc_set_add_req(req_set, req);
+
 	CDEBUG(D_DLMTRACE, "Sent reclaim request to %s: count=%d\n",
 	       obd_export_nid2str(exp), count);
 
@@ -342,6 +344,7 @@ static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
 	int type;
 	int idx;
 	int rc;
+	struct ptlrpc_request_set *set;
 
 	ENTRY;
 
@@ -360,6 +363,12 @@ static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
 
 	CDEBUG(D_DLMTRACE, "%s: Try to reclaim %d lock from %d exports (total_count=%d)\n",
 	       ldlm_ns_name(ns), total_to_cancel, maxscan, total_count);
+
+	set = ptlrpc_prep_set();
+	if (set == NULL)
+		GOTO(out, rc = -ENOMEM);
+
+	set->set_max_inflight = ns->ns_max_parallel_ast ?: UINT_MAX;
 
 	spin_lock(&obd->obd_dev_lock);
 	while (*count > 0 && nr_processed < maxscan) {
@@ -390,7 +399,7 @@ static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
 		class_export_get(exp);
 		spin_unlock(&obd->obd_dev_lock);
 
-		rc = ldlm_reclaim_client_notify_ast(exp, exp_reclaim_count);
+		rc = ldlm_reclaim_client_notify_ast(exp, exp_reclaim_count, set);
 		if (rc) {
 			CERROR("%s: Failed to send reclaim notify to %s: rc=%d\n",
 			       ldlm_ns_name(ns), obd_export_nid2str(exp), rc);
@@ -405,11 +414,15 @@ static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
 	}
 	spin_unlock(&obd->obd_dev_lock);
 
+	ptlrpc_set_wait(NULL, set);
+	ptlrpc_set_destroy(set);
+
 	CDEBUG(D_DLMTRACE,
 	       "%s: Sent %d/%d reclaim requests to reclaim %d/%d/%d locks.\n",
 	       ldlm_ns_name(ns), request_sent, nr_processed,
 	       remain - *count, *count, total_to_cancel);
 
+out:
 	RETURN_EXIT;
 }
 
