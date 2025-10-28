@@ -284,43 +284,36 @@ static int ldlm_client_reclaim_count(struct obd_export *exp, int total_count,
 static int ldlm_reclaim_client_notify_ast(struct obd_export *exp, int count,
 										  struct ptlrpc_request_set *req_set)
 {
-	struct ptlrpc_request *req;
-	struct ldlm_request *body;
+	struct ldlm_reclaim_notify_info *info;
+
+	int rc = 0;
 
 	ENTRY;
 
+	OBD_ALLOC_PTR(info);
+	if (info == NULL) {
+		return -ENOMEM;
+	}
+
+	info->lr_lock_count = count;
+	/* other info */
+
 	/* Use LDLM_SET_INFO instead? */
-	req = ptlrpc_request_alloc_pack(exp->exp_imp_reverse,
-					&RQF_LDLM_BL_CALLBACK,
-					LUSTRE_DLM_VERSION, LDLM_BL_CALLBACK);
-	if (IS_ERR(req))
-		RETURN(PTR_ERR(req));
+	rc = do_set_info_async(exp->exp_imp_reverse,
+						   LDLM_SET_INFO,
+						   LUSTRE_DLM_VERSION,
+						   sizeof(KEY_LOCK_RECLAIM_NOTIFY),
+						   KEY_LOCK_RECLAIM_NOTIFY,
+						   sizeof(struct ldlm_reclaim_notify_info),
+						   info,
+						   req_set);
 
-	body = req_capsule_client_get(&req->rq_pill, &RMF_DLM_REQ);
-	/* Fake lock handle to indicate that this is a lock reclaim request. */
-	body->lock_handle[0].cookie = 0;
-	body->lock_handle[1].cookie = 0;
-	body->lock_count = count;
-
-	ptlrpc_request_set_replen(req);
-
-	req->rq_no_resend = 1;
-	req->rq_no_delay = 1;
-	/* Shorter timeout for reclaim request to the client */
-	req->rq_timeout = ldlm_timeout / 2;
-
-	/*
-	 * Send asynchronously.
-	 * Should we make it synchronously to avoid sending too much
-	 * reclaim requests to clients or add some sleep interval between
-	 * two reclaim progress?
-	 */
-	ptlrpc_set_add_req(req_set, req);
+	OBD_FREE_PTR(info);
 
 	CDEBUG(D_DLMTRACE, "Sent reclaim request to %s: count=%d\n",
 	       obd_export_nid2str(exp), count);
 
-	RETURN(0);
+	return rc;
 }
 
 /**

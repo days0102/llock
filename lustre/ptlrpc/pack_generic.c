@@ -1750,6 +1750,12 @@ int do_set_info_async(struct obd_import *imp,
 
 	if (KEY_IS(KEY_CHANGELOG_CLEAR))
 		do_pack_body(req);
+	if (KEY_IS(KEY_LOCK_RECLAIM_NOTIFY)) {
+		req->rq_no_resend = 1;
+		req->rq_no_delay  = 1;
+		/* Shorter timeout for reclaim request to the client */
+		req->rq_timeout = ldlm_timeout / 2;
+	}
 
 	tmp = req_capsule_client_get(&req->rq_pill, &RMF_SETINFO_KEY);
 	memcpy(tmp, key, keylen);

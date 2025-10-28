@@ -2293,6 +2293,8 @@ int ldlm_bl_thread_wakeup(void)
 static int ldlm_handle_setinfo(struct ptlrpc_request *req)
 {
 	struct obd_device *obd = req->rq_export->exp_obd;
+	struct ldlm_namespace			*ns;
+	struct ldlm_reclaim_notify_info *info;
 	char *key;
 	void *val;
 	int keylen, vallen;
@@ -2328,7 +2330,25 @@ static int ldlm_handle_setinfo(struct ptlrpc_request *req)
 					sizeof(KEY_HSM_COPYTOOL_SEND),
 					KEY_HSM_COPYTOOL_SEND,
 					vallen, val, NULL);
-	else
+	else if (KEY_IS(KEY_LOCK_RECLAIM_NOTIFY)) {
+		/*
+		 * This is a lock reclaim notify from DLM lock server.
+		 */
+		ns = obd->obd_namespace;
+		LASSERT(ns != NULL);
+
+		info = val;
+
+		CDEBUG(D_DLMTRACE,
+			   "%s: recevie notify from server to reclaim %d locks.\n",
+			   ldlm_ns_name(ns),
+			   info->lr_lock_count);
+		rc = ldlm_cancel_lru(ns, info->lr_lock_count, LCF_ASYNC, 0);
+		if (!rc)
+			CERROR("%s: failed LRU shrinking: rc = %d\n", ldlm_ns_name(ns), rc);
+		rc = ldlm_callback_reply(req, 0);
+		RETURN(0);
+	} else
 		DEBUG_REQ(D_WARNING, req, "ignoring unknown key '%s'", key);
 
 	return rc;
@@ -2438,22 +2458,6 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 		rc = ldlm_cli_cancel(&dlm_req->lock_handle[0], 0);
 		if (rc < 0)
 			CERROR("ldlm_cli_cancel: %d\n", rc);
-	}
-
-	/*
-	 * This is a lock reclaim notify from DLM lock server.
-	 * FIXME: should we use LDLM_SET_INFO instead?
-	 */
-	if (dlm_req->lock_handle[0].cookie == 0 &&
-	    lustre_msg_get_opc(req->rq_reqmsg) == LDLM_BL_CALLBACK) {
-		CDEBUG(D_DLMTRACE,
-		       "%s: recevie notify from server to reclaim %d locks.\n",
-		       ldlm_ns_name(ns), dlm_req->lock_count);
-		rc = ldlm_cancel_lru(ns, dlm_req->lock_count, LCF_ASYNC, 0);
-		if (!rc)
-			CERROR("%s: failed LRU shrinking: rc = %d\n", ldlm_ns_name(ns), rc);
-		rc = ldlm_callback_reply(req, 0);
-		RETURN(0);
 	}
 
 	lock = ldlm_handle2lock_long(&dlm_req->lock_handle[0], 0);

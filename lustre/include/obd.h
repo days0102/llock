@@ -866,6 +866,8 @@ static inline bool obd_mdt_recovery_abort(struct obd_device *obd)
 
 #define KEY_UNEVICT_CACHE_SHRINK	"unevict_cache_shrink"
 
+#define KEY_LOCK_RECLAIM_NOTIFY "lock_reclaim_notify"
+
 /* Flags for op_xvalid */
 enum op_xvalid {
 	OP_XVALID_CTIME_SET	= BIT(0),	/* 0x0001 */

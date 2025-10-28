@@ -404,6 +404,11 @@ enum ldlm_reclaim_policy {
 };
 
 extern enum ldlm_reclaim_policy ldlm_reclaim_pol;
+
+struct ldlm_reclaim_notify_info {
+	int lr_lock_count;
+};
+
 #endif
 extern unsigned int ldlm_dump_granted_max;
 int ldlm_reclaim_setup(void);
