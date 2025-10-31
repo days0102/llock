@@ -399,10 +399,24 @@ enum ldlm_reclaim_policy {
 	 * frequency and age) of locks on its lock namespace.
 	 */
 	LDLM_RECLAIM_POL_NOTIFY,
+
+	LDLM_RECLAIM_POL_MAX,
 };
 
 extern enum ldlm_reclaim_policy ldlm_reclaim_pol;
+
 #endif
+
+struct ldlm_reclaim_info {
+	int lr_lock_count;
+	int lr_lock_total;
+	/*
+	 * Other information, such as server memory pressure,
+	 * the expected minimum number of locks to be released,
+	 * and whether it is forced release, etc.
+	 */
+};
+
 extern unsigned int ldlm_dump_granted_max;
 int ldlm_reclaim_setup(void);
 void ldlm_reclaim_cleanup(void);
