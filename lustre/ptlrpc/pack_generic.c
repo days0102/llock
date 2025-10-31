@@ -1750,6 +1750,16 @@ int do_set_info_async(struct obd_import *imp,
 
 	if (KEY_IS(KEY_CHANGELOG_CLEAR))
 		do_pack_body(req);
+	if (KEY_IS(KEY_LOCK_RECLAIM_INFO)) {
+		req->rq_no_resend = 1;
+		req->rq_no_delay  = 1;
+		/* Shorter timeout for reclaim request to the client */
+		req->rq_timeout = ldlm_timeout / 2;
+
+		if (req_capsule_req_need_swab(&req->rq_pill)) {
+			lustre_swab_reclaim_info(val);
+		}
+	}
 
 	tmp = req_capsule_client_get(&req->rq_pill, &RMF_SETINFO_KEY);
 	memcpy(tmp, key, keylen);
@@ -3189,3 +3199,11 @@ void lustre_swab_ladvise_hdr(struct ladvise_hdr *ladvise_hdr)
 	__swab64s(&ladvise_hdr->lah_value3);
 }
 EXPORT_SYMBOL(lustre_swab_ladvise_hdr);
+
+void lustre_swab_reclaim_info(struct ldlm_reclaim_info *lri)
+{
+	__swab32s(&lri->lr_lock_count);
+	__swab32s(&lri->lr_lock_total);
+	__swab32s(&lri->lr_mem_pressure);
+}
+EXPORT_SYMBOL(lustre_swab_reclaim_info);

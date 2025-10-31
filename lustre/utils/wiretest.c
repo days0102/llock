@@ -7352,4 +7352,35 @@ void lustre_assert_wire_constants(void)
 		 (long long)(int)offsetof(struct lu_pcc_state, pccs_path));
 	LASSERTF((int)sizeof(((struct lu_pcc_state *)0)->pccs_path) == 4096, "found %lld\n",
 		 (long long)(int)sizeof(((struct lu_pcc_state *)0)->pccs_path));
+
+	/* checks fo struct ldlm_reclaim_info */
+	LASSERTF((int)sizeof(struct ldlm_reclaim_info) == 12, "found %lld\n",
+		 (long long)(int)sizeof(struct ldlm_reclaim_info));
+	LASSERTF((int)offsetof(struct ldlm_reclaim_info, lr_lock_count) == 0,
+		 "found %lld\n",
+		 (long long)(int)offsetof(struct ldlm_reclaim_info,
+					  lr_lock_count));
+	LASSERTF((int)sizeof(((struct ldlm_reclaim_info *)0)->lr_lock_count) ==
+			 4,
+		 "found %lld\n",
+		 (long long)(int)sizeof(
+			 ((struct ldlm_reclaim_info *)0)->lr_lock_count));
+	LASSERTF((int)offsetof(struct ldlm_reclaim_info, lr_lock_total) == 4,
+		 "found %lld\n",
+		 (long long)(int)offsetof(struct ldlm_reclaim_info,
+					  lr_lock_total));
+	LASSERTF((int)sizeof(((struct ldlm_reclaim_info *)0)->lr_lock_total) ==
+			 4,
+		 "found %lld\n",
+		 (long long)(int)sizeof(
+			 ((struct ldlm_reclaim_info *)0)->lr_lock_total));
+	LASSERTF((int)offsetof(struct ldlm_reclaim_info, lr_mem_pressure) == 8,
+		 "found %lld\n",
+		 (long long)(int)offsetof(struct ldlm_reclaim_info,
+					  lr_mem_pressure));
+	LASSERTF((int)sizeof(
+			 ((struct ldlm_reclaim_info *)0)->lr_mem_pressure) == 4,
+		 "found %lld\n",
+		 (long long)(int)sizeof(
+			 ((struct ldlm_reclaim_info *)0)->lr_mem_pressure));
 }

@@ -4046,6 +4046,12 @@ struct ladvise_hdr {
 	struct lu_ladvise	lah_advise[];	/* advices in this header */
 };
 
+struct ldlm_reclaim_info {
+	__u32 lr_lock_count;
+	__u32 lr_lock_total;
+	__u32 lr_mem_pressure;
+};
+
 #if defined(__cplusplus)
 }
 #endif

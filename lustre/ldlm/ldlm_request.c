@@ -1867,6 +1867,16 @@ ldlm_cancel_aged_no_wait_policy(struct ldlm_namespace *ns,
 	return ldlm_cancel_no_wait_policy(ns, lock, added, min);
 }
 
+static enum ldlm_policy_res ldlm_cancel_notify_policy(struct ldlm_namespace *ns,
+						      struct ldlm_lock *lock,
+						      int added, int min)
+{
+	if ((added >= min))
+		return LDLM_POLICY_KEEP_LOCK;
+
+	return LDLM_POLICY_CANCEL_LOCK;
+}
+
 typedef enum ldlm_policy_res
 (*ldlm_cancel_lru_policy_t)(struct ldlm_namespace *ns, struct ldlm_lock *lock,
 			    int added, int min);
@@ -1882,6 +1892,8 @@ ldlm_cancel_lru_policy(struct ldlm_namespace *ns, enum ldlm_lru_flags lru_flags)
 	} else {
 		if (lru_flags & LDLM_LRU_FLAG_NO_WAIT)
 			return ldlm_cancel_aged_no_wait_policy;
+		else if (lru_flags & LDLM_LRU_FLAG_NOTIFY)
+			return ldlm_cancel_notify_policy;
 		else
 			return ldlm_cancel_aged_policy;
 	}
