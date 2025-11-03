@@ -2339,19 +2339,22 @@ static int ldlm_handle_setinfo(struct ptlrpc_request *req)
 
 		info = val;
 
-		CDEBUG(D_DLMTRACE,
-			   "%s: recevie notify from server to reclaim %d locks.\n",
-			   ldlm_ns_name(ns),
-			   info->lr_lock_count);
 		/**
 		 * FIXME: Let the client make better decisions based on the
 		 * provided info.
 		 */
 		rc = ldlm_cancel_lru(ns, info->lr_lock_count, LCF_ASYNC, 0);
 		if (!rc)
-			CERROR("%s: failed LRU shrinking: rc = %d\n",
-			    ldlm_ns_name(ns),
-			    rc);
+			CDEBUG(D_DLMTRACE,
+			       "%s: failed LRU shrinking: rc = %d\n",
+			       ldlm_ns_name(ns),
+			       rc);
+		CDEBUG(
+		    D_DLMTRACE,
+		    "%s: recevie notify from server to reclaim %d/%d locks.\n",
+		    ldlm_ns_name(ns),
+		    info->lr_lock_count,
+		    rc);
 		RETURN(0);
 	} else
 		DEBUG_REQ(D_WARNING, req, "ignoring unknown key '%s'", key);
@@ -3302,6 +3305,12 @@ static ssize_t lock_reclaim_threshold_mb_store(struct kobject *kobj,
 	}
 	watermark = value >> 20;
 
+	if (ldlm_lock_limit_mb != 0 && watermark > ldlm_lock_limit_mb) {
+		CERROR("lock_reclaim_threshold_mb must be smaller than "
+		       "lock_limit_mb.\n");
+		return -EINVAL;
+	}
+
 	ldlm_reclaim_threshold_mb = watermark;
 	if (watermark != 0) {
 		watermark <<= 20;
@@ -3337,11 +3346,6 @@ static ssize_t lock_limit_mb_store(struct kobject *kobj,
 		return -EINVAL;
 	}
 	watermark = value >> 20;
-
-	if (ldlm_lock_limit_mb != 0 && watermark > ldlm_lock_limit_mb) {
-		CERROR("lock_reclaim_threshold_mb must be smaller than lock_limit_mb.\n");
-		return -EINVAL;
-	}
 
 	if (ldlm_reclaim_threshold_mb != 0 &&
 	    watermark < ldlm_reclaim_threshold_mb) {
@@ -3385,6 +3389,29 @@ static ssize_t lock_reclaim_pol_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(lock_reclaim_pol);
 
+static ssize_t lock_reclaim_batch_show(struct kobject *kobj,
+				       struct attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", ldlm_reclaim_batch);
+}
+
+static ssize_t lock_reclaim_batch_store(struct kobject *kobj,
+					struct attribute *attr,
+					const char *buffer, size_t count)
+{
+	u64 val;
+	int rc;
+
+	rc = kstrtoull(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	ldlm_reclaim_batch = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_reclaim_batch);
+
 static ssize_t lock_granted_count_show(struct kobject *kobj,
 				       struct attribute *attr,
 				       char *buf)
@@ -3412,6 +3439,7 @@ static struct attribute *ldlm_attrs[] = {
 	&lustre_attr_lock_limit_mb.attr,
 	&lustre_attr_lock_granted_count.attr,
 	&lustre_attr_lock_reclaim_pol.attr,
+	&lustre_attr_lock_reclaim_batch.attr,
 #endif
 	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,

@@ -46,6 +46,12 @@ __u64 ldlm_lock_limit;
 __u64 ldlm_reclaim_threshold_mb;
 __u64 ldlm_lock_limit_mb;
 
+/*
+ *  num -- batch size for reclaiming locks
+ *  0 	-- percentage based on total granted locks
+ */
+__u64 ldlm_reclaim_batch;
+
 enum ldlm_reclaim_policy ldlm_reclaim_pol;
 
 struct percpu_counter		ldlm_granted_total;
@@ -213,7 +219,7 @@ static void ldlm_reclaim_res(struct ldlm_namespace *ns, int *count,
 }
 
 #define LDLM_RECLAIM_BATCH	512
-#define LDLM_RECLAIM_AGE_MIN	(300 * NSEC_PER_SEC)
+#define LDLM_RECLAIM_AGE_MIN	(3 * NSEC_PER_SEC)
 #define LDLM_RECLAIM_AGE_MAX	(LDLM_DEFAULT_LRU_MAX_AGE * NSEC_PER_SEC * 3/4)
 
 static inline s64 ldlm_reclaim_age(void)
@@ -289,19 +295,14 @@ static int ldlm_reclaim_client_notify_ast(struct obd_export *exp,
 	ENTRY;
 
 	/* LDLM_SET_INFO instead */
-	rc = do_set_info_async(exp->exp_imp_reverse,
-	    LDLM_SET_INFO,
-	    LUSTRE_DLM_VERSION,
-	    sizeof(KEY_LOCK_RECLAIM_INFO),
-	    KEY_LOCK_RECLAIM_INFO,
-	    sizeof(struct ldlm_reclaim_info),
-	    info,
-	    req_set);
+	rc = do_set_info_async(exp->exp_imp_reverse, LDLM_SET_INFO,
+			       LUSTRE_DLM_VERSION,
+			       sizeof(KEY_LOCK_RECLAIM_INFO),
+			       KEY_LOCK_RECLAIM_INFO,
+			       sizeof(struct ldlm_reclaim_info), info, req_set);
 
-	CDEBUG(D_DLMTRACE,
-	    "Sent reclaim request to %s: count=%d\n",
-	    obd_export_nid2str(exp),
-	    info->lr_lock_count);
+	CDEBUG(D_DLMTRACE, "Sent reclaim request to %s: count=%d\n",
+	       obd_export_nid2str(exp), info->lr_lock_count);
 
 	return rc;
 }
@@ -344,6 +345,17 @@ static void ldlm_reclaim_notify_clients(struct ldlm_namespace *ns,
 
 	if (maxscan == 0)
 		RETURN_EXIT;
+
+	if (total_to_cancel == 0) {
+		/* > limit, cancel 10% of total locks */
+		if (total_count > ldlm_lock_limit)
+			total_to_cancel = (total_count * 10) / 100;
+		else /* > threshold, cancel 5% of total locks */
+			total_to_cancel = (total_count * 5) / 100;
+
+		/* XXX: avoid too small cancellation? */
+		total_to_cancel = max(total_to_cancel, LDLM_RECLAIM_BATCH);
+	}
 
 	CDEBUG(D_DLMTRACE, "%s: Try to reclaim %d lock from %d exports (total_count=%d)\n",
 	       ldlm_ns_name(ns), total_to_cancel, maxscan, total_count);
@@ -462,7 +474,7 @@ again:
 			break;
 		case LDLM_RECLAIM_POL_NOTIFY:
 			ldlm_reclaim_notify_clients(ns, total_count,
-						    LDLM_RECLAIM_BATCH, &count);
+						    ldlm_reclaim_batch, &count);
 			break;
 		default:
 			LBUG();
@@ -586,6 +598,7 @@ int ldlm_reclaim_setup(void)
 	ldlm_lock_limit_mb = ldlm_locknr2mb(ldlm_lock_limit);
 	/* Add sysfs tunable for LDLM reclaim policy */
 	ldlm_reclaim_pol = LDLM_RECLAIM_POL_NOTIFY;
+	ldlm_reclaim_batch = LDLM_RECLAIM_BATCH;
 
 	ldlm_last_reclaim_age_ns = LDLM_RECLAIM_AGE_MAX;
 	ldlm_last_reclaim_time = ktime_get();
