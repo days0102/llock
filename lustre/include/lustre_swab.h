@@ -121,6 +121,7 @@ void lustre_swab_close_data_special(struct close_data *cd, enum mds_op_bias b);
 void lustre_swab_lmv_user_md(struct lmv_user_md *lum);
 void lustre_swab_ladvise(struct lu_ladvise *ladvise);
 void lustre_swab_ladvise_hdr(struct ladvise_hdr *ladvise_hdr);
+void lustre_swab_reclaim_info(struct ldlm_reclaim_info *lri);
 
 /* Functions for dumping PTLRPC fields */
 void dump_rniobuf(struct niobuf_remote *rnb);

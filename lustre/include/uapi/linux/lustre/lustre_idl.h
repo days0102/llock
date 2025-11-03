@@ -4046,6 +4046,17 @@ struct ladvise_hdr {
 	struct lu_ladvise	lah_advise[];	/* advices in this header */
 };
 
+struct ldlm_reclaim_info {
+	__u32 lr_lock_count;
+	__u32 lr_lock_total;
+	/*
+	 * Other information, such as server memory pressure,
+	 * the expected minimum number of locks to be released,
+	 * and whether it is forced release, etc.
+	 */
+	__u32 lr_mem_pressure;
+};
+
 #if defined(__cplusplus)
 }
 #endif

@@ -405,17 +405,10 @@ enum ldlm_reclaim_policy {
 
 extern enum ldlm_reclaim_policy ldlm_reclaim_pol;
 
-#endif
+extern u64 ldlm_reclaim_batch;
+extern u64 ldlm_reclaim_batch_per;
 
-struct ldlm_reclaim_info {
-	int lr_lock_count;
-	int lr_lock_total;
-	/*
-	 * Other information, such as server memory pressure,
-	 * the expected minimum number of locks to be released,
-	 * and whether it is forced release, etc.
-	 */
-};
+#endif
 
 extern unsigned int ldlm_dump_granted_max;
 int ldlm_reclaim_setup(void);
