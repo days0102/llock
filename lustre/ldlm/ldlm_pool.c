@@ -457,6 +457,12 @@ static int ldlm_cli_pool_recalc(struct ldlm_pool *pl, bool force)
 
 	ENTRY;
 
+	/*
+	 * Do not cancel locks in case lru resize is disabled for this ns.
+	 */
+	if (!ns_connect_lru_resize(ldlm_pl2ns(pl)))
+		RETURN(0);
+
 	recalc_interval_sec = ktime_get_seconds() - pl->pl_recalc_time;
 	if (!force && recalc_interval_sec < pl->pl_recalc_period)
 		RETURN(0);

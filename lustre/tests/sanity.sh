@@ -35706,6 +35706,54 @@ test_909() {
 }
 run_test 909 "Verify mdt index"
 
+test_915a() {
+	remote_mds_nodsh && skip "remote MDS with nodsh"
+	[[ $MDS1_VERSION -lt $(version_code 2.16.58) ]] &&
+		skip "Need MDS version at least 2.16.58"
+
+	mkdir_on_mdt0 $DIR/$tdir || error "failed to create $DIR/$tdir"
+	lru_resize_disable mdc || error "lru_resize_disable failed"
+
+	do_facet mds1 $LCTL set_param ldlm.lock_reclaim_pol=1
+
+	cancel_lru_locks mdc
+	local nsdir="ldlm.namespaces.*-MDT0000-mdc-*"
+	local unused=$($LCTL get_param -n $nsdir.lock_unused_count)
+	[ $unused -eq 0 ] || error "$unused locks are not cleared"
+
+	local lru_size=$(default_lru_size)
+	local nr=$((lru_size - 200)) # don't fill lru completely
+
+	createmany -o $DIR/$tdir/f $nr ||
+		error "failed to create $nr files in $DIR/$tdir"
+	unused=$($LCTL get_param -n $nsdir.lock_unused_count)
+
+	echo "Created $nr files, unused locks: $unused, lru_size: $lru_size"
+
+	#define OBD_FAIL_LDLM_WATERMARK_LOW     0x327
+	local fail_val=$((nr/2))
+	do_facet mds1 $LCTL set_param fail_loc=0x327
+	do_facet mds1 $LCTL set_param fail_val=$fail_val && \
+		echo "Set threshold to $fail_val"
+	touch $DIR/$tdir/m
+
+	echo "sleep 5 seconds ..."
+	sleep 5
+	local lck_cnt=$($LCTL get_param -n $nsdir.lock_unused_count)
+
+	do_facet mds1 $LCTL set_param fail_loc=0
+	do_facet mds1 $LCTL set_param fail_val=0
+	if [ $lck_cnt -lt $unused ]; then
+		echo "Reclaim locks, before:$unused, after:$lck_cnt"
+	else
+		error "No locks reclaimed, before:$unused, after:$lck_cnt"
+	fi
+
+	rm $DIR/$tdir/m
+	unlinkmany $DIR/$tdir/f $nr
+}
+run_test 915a "Reclaims locks with notify when reaching reclaim_threshold"
+
 complete_test $SECONDS
 [ -f $EXT2_DEV ] && rm $EXT2_DEV || true
 check_and_cleanup_lustre

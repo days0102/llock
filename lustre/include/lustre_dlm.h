@@ -193,15 +193,17 @@ static inline int lockmode_compat(enum ldlm_mode exist_mode,
 
 /* Cancel lru flag, it indicates we cancel aged locks. */
 enum ldlm_lru_flags {
-	LDLM_LRU_FLAG_NO_WAIT	= 0x1, /* Cancel locks w/o blocking (neither
+	LDLM_LRU_FLAG_NO_WAIT = 0x1, /* Cancel locks w/o blocking (neither
 					* sending nor waiting for any RPCs)
 					*/
-	LDLM_LRU_FLAG_CLEANUP	= 0x2, /* Used when clearing lru, tells
+	LDLM_LRU_FLAG_CLEANUP = 0x2, /* Used when clearing lru, tells
 					* prepare_lru_list to set discard flag
 					* on PR extent locks so we don't waste
 					* time saving pages that will be
 					* discarded momentarily
 					*/
+	LDLM_LRU_FLAG_AGED = 0x4, /* Cancel aged locks */
+	LDLM_LRU_FLAG_NOTIFY = 0x8, /* Reclaim-notify */
 };
 
 struct ldlm_pool;

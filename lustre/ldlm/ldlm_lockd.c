@@ -20,6 +20,7 @@
 #include <linux/list.h>
 #include <lustre_errno.h>
 #include <lustre_dlm.h>
+#include <lustre_swab.h>
 #include <obd_class.h>
 #include "ldlm_internal.h"
 
@@ -2289,12 +2290,49 @@ int ldlm_bl_thread_wakeup(void)
 	return 0;
 }
 
+/*
+ * Calculate the number of locks to revoke based on server hint and local pressure.
+ * Adjustment = (server_hint ± delta) where delta is modulated by:
+ *   - Memory pressure (cubic function around 60% midpoint)
+ *   - Unused locks ratio (how much freedom to deviate)
+ */
+static int __attribute__((optimize("O0")))
+ldlm_cancel_decide(struct ldlm_namespace *ns, struct ldlm_reclaim_info *info)
+{
+	s64 count = info->lr_lock_count;
+	s64 delta;
+	s64 unused_ratio;
+	const int pressure_mid_point = 60;
+	const int max_adjustment_factor = 3;
+
+	/* Cubic pressure deviation: d^3 drives aggressive reclaim at extremes */
+	s64 d = (s64)info->lr_mem_pressure - pressure_mid_point;
+	delta = div64_s64(count * d * d * d, (s64)pressure_mid_point *
+						     pressure_mid_point *
+						     pressure_mid_point);
+
+	/* Ratio of unused locks relative to server hint */
+	unused_ratio =
+		div64_u64((u64)ns->ns_nr_unused, (u64)info->lr_lock_count);
+	unused_ratio = clamp(unused_ratio, 1LL, (s64)max_adjustment_factor);
+
+	/* Modulate delta by unused ratio: amplify at high pressure, compress at low */
+	if (delta > 0)
+		delta *= unused_ratio;
+	else if (delta < 0)
+		delta = div64_s64(delta, unused_ratio);
+
+	count += delta;
+	count = min_t(s64, count, (s64)ns->ns_nr_unused);
+	count = max_t(s64, count, 0);
+
+	return count;
+}
+
 /* Setinfo coming from Server (eg MDT) to Client (eg MDC)! */
 static int ldlm_handle_setinfo(struct ptlrpc_request *req)
 {
 	struct obd_device *obd = req->rq_export->exp_obd;
-	struct ldlm_namespace	 *ns;
-	struct ldlm_reclaim_info *info;
 	char *key;
 	void *val;
 	int keylen, vallen;
@@ -2334,24 +2372,29 @@ static int ldlm_handle_setinfo(struct ptlrpc_request *req)
 		/*
 		 * This is a lock reclaim notify from DLM lock server.
 		 */
-		ns = obd->obd_namespace;
+		struct ldlm_namespace *ns = obd->obd_namespace;
+		int cancels = 0;
 		LASSERT(ns != NULL);
 
-		info = val;
+		if (req_capsule_rep_need_swab(&req->rq_pill)) {
+			lustre_swab_reclaim_info(val);
+		}
 
-		CDEBUG(D_DLMTRACE,
-			   "%s: recevie notify from server to reclaim %d locks.\n",
-			   ldlm_ns_name(ns),
-			   info->lr_lock_count);
+		cancels = ldlm_cancel_decide(ns, val);
+
 		/**
 		 * FIXME: Let the client make better decisions based on the
 		 * provided info.
 		 */
-		rc = ldlm_cancel_lru(ns, info->lr_lock_count, LCF_ASYNC, 0);
+		rc = ldlm_cancel_lru(ns, cancels, LCF_ASYNC,
+				     LDLM_LRU_FLAG_NOTIFY);
 		if (!rc)
-			CERROR("%s: failed LRU shrinking: rc = %d\n",
-			    ldlm_ns_name(ns),
-			    rc);
+			CDEBUG(D_DLMTRACE,
+			       "%s: failed LRU shrinking: rc = %d\n",
+			       ldlm_ns_name(ns), rc);
+		CDEBUG(D_DLMTRACE,
+		       "%s: recevie notify from server to reclaim %d/%d locks.\n",
+		       ldlm_ns_name(ns), cancels, rc);
 		RETURN(0);
 	} else
 		DEBUG_REQ(D_WARNING, req, "ignoring unknown key '%s'", key);
@@ -3385,6 +3428,58 @@ static ssize_t lock_reclaim_pol_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(lock_reclaim_pol);
 
+static ssize_t lock_reclaim_batch_show(struct kobject *kobj,
+				       struct attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", ldlm_reclaim_batch);
+}
+
+static ssize_t lock_reclaim_batch_store(struct kobject *kobj,
+					struct attribute *attr,
+					const char *buffer, size_t count)
+{
+	u64 val;
+	int rc;
+
+	rc = kstrtoull(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	ldlm_reclaim_batch = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_reclaim_batch);
+
+static ssize_t lock_reclaim_batch_per_show(struct kobject *kobj,
+					   struct attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", ldlm_reclaim_batch_per);
+}
+
+static ssize_t lock_reclaim_batch_per_store(struct kobject *kobj,
+					    struct attribute *attr,
+					    const char *buffer, size_t count)
+{
+	u64 val;
+	int rc;
+
+	rc = kstrtoull(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	if (val > LDLM_RECLAIM_BATCH_PER_MAX) {
+		CERROR("lock_reclaim_batch_per should be smaller than %u.\n",
+		       LDLM_RECLAIM_BATCH_PER_MAX);
+		return -EINVAL;
+	}
+
+	ldlm_reclaim_batch_per = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_reclaim_batch_per);
+
 static ssize_t lock_granted_count_show(struct kobject *kobj,
 				       struct attribute *attr,
 				       char *buf)
@@ -3412,6 +3507,8 @@ static struct attribute *ldlm_attrs[] = {
 	&lustre_attr_lock_limit_mb.attr,
 	&lustre_attr_lock_granted_count.attr,
 	&lustre_attr_lock_reclaim_pol.attr,
+	&lustre_attr_lock_reclaim_batch.attr,
+	&lustre_attr_lock_reclaim_batch_per.attr,
 #endif
 	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
